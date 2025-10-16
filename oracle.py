@@ -68,10 +68,12 @@ def send_all():
         print(f"Sent LINK-STATE to VN {i}")
         
 def detect_change(path):
+    global transition_matrix
     new_tm=parse(path)
     for i in range(N):
         for j in range(N):
             if(new_tm[i][j]!=transition_matrix[i][j]):
+                transition_matrix=new_tm
                 return True
     return False
 

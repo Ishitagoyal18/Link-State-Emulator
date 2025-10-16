@@ -60,6 +60,9 @@ string encode_msg(string ip, int port){
     return msg;
 }
 
+void LSA(){
+    cout<<"Link State Algo will be implemented here"<<endl;
+}
 
 int NODE_COUNT;
 string IP;
@@ -67,6 +70,7 @@ vector<Node> nodes;
 int SERVER_PORT=5000;
 string SERVER_IP;
 int BUF_SIZE=1024;
+int TIMEOUT = 1;
 
 int main(){
     cout<<"Enter the number of virtual nodes you want to create: ";
@@ -172,8 +176,31 @@ int main(){
         }
         cout<<endl;
     }
+    LSA();
+    // Here I will listen again from TCP after timeout for changes
+    while(true){
+        for (int i = 0; i < NODE_COUNT; i++) {
+            int sock = nodes[i].tcp_soc; 
 
-    // Here I will Implement Link state Algo
+            char buffer[BUF_SIZE];
+            int n = recv(sock, buffer, BUF_SIZE - 1, 0);  // blocking read
+            if (n < 0) {
+                perror("recv failed");
+                continue;
+            } else if (n == 0) {
+                cout << "Connection closed by server for node " << i << endl;
+                continue;
+            }
+
+            buffer[n] = '\0';
+            string msg(buffer);
+            cout << "Virtual Node " << i << " received msg" << endl;
+            auto neighbors = decode_msg(msg);
+            nodes[i].Neighbors = neighbors;
+        } 
+        cout<<"Updated";
+        LSA();
+    }
 
 
 
