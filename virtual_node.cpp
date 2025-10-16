@@ -60,6 +60,7 @@ string encode_msg(string ip, int port){
     return msg;
 }
 
+
 int NODE_COUNT;
 string IP;
 vector<Node> nodes;
@@ -160,8 +161,7 @@ int main(){
 
         buffer[n] = '\0';
         string msg(buffer);
-        cout << "Virtual Node " << i << " received: " << msg << endl;
-        cout<<i<<"'s msg size: "<<msg.size()<<endl;
+        cout << "Virtual Node " << i << " received msg" << endl;
         auto neighbors = decode_msg(msg);
         nodes[i].Neighbors = neighbors;
     } 

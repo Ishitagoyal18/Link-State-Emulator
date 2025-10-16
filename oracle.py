@@ -64,7 +64,6 @@ def send_all():
         for j in range(N):
             if transition_matrix[i][j] != -1:
                 msg += encode_msg(i, j)
-        print(i,len(msg))
         cons[i].sendall(msg.encode())
         print(f"Sent LINK-STATE to VN {i}")
         
@@ -80,7 +79,6 @@ def detect_change(path):
 def run_oracle(config_path):
     global N, transition_matrix,IP, ports, cons
     transition_matrix = parse(config_path)
-    print(transition_matrix)
 
     print(f"Oracle ready, expecting {N} virtual nodes...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -88,27 +86,29 @@ def run_oracle(config_path):
         s.bind((HOST, PORT))
         s.listen(N)
 
-        while len(IP) < N:
-            conn, addr = s.accept()
-            print(f"[Oracle] Connected by {addr}")
-            data = conn.recv(1024)
-            if not data:
-                continue
-            ip, port = decode_connect(data.decode())
-            IP.append(ip)
-            ports.append(port)
-            cons.append(conn)
-            print(f"[Oracle] Received CONNECT from VN {len(IP)}: IP={ip}, Port={port}")
-            
-        print("[Oracle] All nodes connected. Sending initial LINK-STATE info...")
-        send_all()
+        try:
+            while len(IP) < N:
+                conn, addr = s.accept()
+                data = conn.recv(1024)
+                if not data:
+                    continue
+                ip, port = decode_connect(data.decode())
+                IP.append(ip)
+                ports.append(port)
+                cons.append(conn)
+                print(f"[Oracle] Received CONNECT from VN {len(IP)}: IP={ip}, Port={port}")
+                
+            print("[Oracle] All nodes connected. Sending initial LINK-STATE info...")
+            send_all()
 
-        print("[Oracle] Monitoring config file for topology changes...")
+            # print("[Oracle] Monitoring config file for topology changes...")
+            while True:
+                time.sleep(TIMEOUT)
+                if detect_change(config_path):
+                    send_all()
 
-        while True:
-            time.sleep(TIMEOUT)
-            if detect_change(config_path):
-                send_all()
+        except KeyboardInterrupt:
+            s.close()
         
 
 config_file="config.txt"
