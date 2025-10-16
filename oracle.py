@@ -8,12 +8,13 @@ TIMEOUT=1
 N=0
 ports=[]
 IP=[]
-HOST=  "172.18.145.245"
+HOST=  "0.0.0.0"
 PORT = 5000
 cons=[]
 
 
 def parse(path):
+    global N
     tm= np.full((26, 26), -1, dtype=int)
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
@@ -35,8 +36,8 @@ def parse(path):
 
     for i in range(N-1):
         for j in range(len(token_rows[i])):
-            tm[i][j+i]=int(token_rows[i][j])
-            tm[j+i][i]=int(token_rows[i][j])
+            tm[i][j+i+1]=int(token_rows[i][j])
+            tm[j+i+1][i]=int(token_rows[i][j])
     return tm
 
 def encode_msg(msgto,neighbor):
@@ -63,6 +64,7 @@ def send_all():
         for j in range(N):
             if transition_matrix[i][j] != -1:
                 msg += encode_msg(i, j)
+        print(i,len(msg))
         cons[i].sendall(msg.encode())
         print(f"Sent LINK-STATE to VN {i}")
         
@@ -76,7 +78,9 @@ def detect_change(path):
 
 
 def run_oracle(config_path):
+    global N, transition_matrix,IP, ports, cons
     transition_matrix = parse(config_path)
+    print(transition_matrix)
 
     print(f"Oracle ready, expecting {N} virtual nodes...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -105,6 +109,7 @@ def run_oracle(config_path):
             time.sleep(TIMEOUT)
             if detect_change(config_path):
                 send_all()
+        
 
 config_file="config.txt"
 run_oracle(config_file)
