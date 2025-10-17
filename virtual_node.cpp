@@ -1,4 +1,4 @@
-#include<iostream>
+#include <iostream>
 #include <sstream>
 #include <cstring>
 #include <sys/socket.h>
@@ -10,7 +10,13 @@
 #include <string>
 using namespace std;
 
-//Just timepass code here
+struct LSA_pkt{
+    int sender_id;
+    int seq_number;
+    vector<tuple<int,string, int, int>> Neighbors;
+    int ttl;
+};
+
 struct Node{
     int id;
     string ip;
@@ -18,6 +24,8 @@ struct Node{
     int udp_soc;
     int tcp_soc;
     vector<tuple<int,string, int, int>> Neighbors;
+    vector<LSA_pkt> LSA_database;
+    int seq_number;
 };
 
 string str_ip(string bin){
@@ -60,9 +68,158 @@ string encode_msg(string ip, int port){
     return msg;
 }
 
-void LSA(){
-    cout<<"Link State Algo will be implemented here"<<endl;
+string encode_LSA(LSA_pkt lsa){
+    string msg="";
+    msg+=bitset<5>(lsa.sender_id).to_string();
+    msg+=bitset<8>(lsa.seq_number).to_string();
+    msg+=bitset<8>(lsa.ttl).to_string();
+    for(auto &[index, ip, port, cost]: lsa.Neighbors){
+        msg+=bitset<5>(index).to_string();
+        msg+=ip_str(ip);
+        msg+=bitset<13>(port).to_string();
+        msg+=bitset<16>(cost).to_string();
+    }
+    return msg;
 }
+
+LSA_pkt decode_LSA(string msg){
+    LSA_pkt lsa;
+    lsa.sender_id = stoi(msg.substr(0, 5),nullptr,2);
+    lsa.seq_number = stoi(msg.substr(5, 8),nullptr,2);
+    lsa.ttl = stoi(msg.substr(13, 8),nullptr,2);
+    for(int i=21;i<msg.size();i+=66){
+        int index = stoi(msg.substr(i, 5),nullptr,2);
+        string ip = str_ip(msg.substr(i+5, 32));
+        int port = stoi(msg.substr(i+37, 13),nullptr,2);
+        int cost = stoi(msg.substr(i+50, 16),nullptr,2);
+        lsa.Neighbors.push_back(make_tuple(index,ip, port, cost));
+    }
+    return lsa;
+}
+
+void LSA(vector<Node>& nodes,int NODE_COUNT) {
+    cout<<"[Phase1] Starting Flooding LSA"<<endl;
+    //send the encoded LSA packet to all neighbours of each node via UDP
+    for(auto &node: nodes){
+        node.seq_number++;
+        LSA_pkt lsa;
+        lsa.sender_id = node.id;
+        lsa.seq_number = node.seq_number;
+        lsa.Neighbors = node.Neighbors;
+        lsa.ttl = 64;
+
+        string msg = encode_LSA(lsa);
+        for (auto &[nbr_id, nbr_ip, nbr_port, cost] : node.Neighbors) {
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;  
+            addr.sin_port = htons(nbr_port);
+            inet_pton(AF_INET, nbr_ip.c_str(), &addr.sin_addr);
+            sendto(node.udp_soc, msg.c_str(), msg.size(), 0,(sockaddr *)&addr, sizeof(addr));
+        }
+        node.LSA_database.push_back(lsa);
+        cout << "Node " << node.id << " flooded its LSP (seq=" << node.seq_number << ")" << endl;
+    }
+
+    //Listens to all UDP pakets
+    fd_set readfds;
+    timeval timeout{};
+    timeout.tv_sec = 1; //timeout to wait for select
+    FD_ZERO(&readfds);
+
+    int max_fd = -1; //maximum UDP fd
+    for (auto &n : nodes) {
+        FD_SET(n.udp_soc, &readfds);
+        if (n.udp_soc > max_fd)
+            max_fd = n.udp_soc;
+    }
+
+    select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+
+    for (auto &node : nodes) {
+        if (!FD_ISSET(node.udp_soc, &readfds))
+            continue;
+
+        char buffer[1024];
+        sockaddr_in sender_addr{};
+        socklen_t len = sizeof(sender_addr);
+        int n = recvfrom(node.udp_soc, buffer, sizeof(buffer) - 1, 0,(sockaddr *)&sender_addr, &len);
+        if (n <= 0)
+            continue;
+
+        buffer[n] = '\0';
+        string msg(buffer);
+        LSA_pkt recv_lsa = decode_LSA(msg);
+
+        // Reliable flooding logic
+        bool newer = true;
+        for (auto &l : node.LSA_database) {
+            if (l.sender_id == recv_lsa.sender_id) {
+                if (recv_lsa.seq_number <= l.seq_number)
+                    newer = false;
+                break;
+            }
+        }
+
+        if (newer) {
+            node.LSA_database.push_back(recv_lsa);
+
+            // forward to neighbors (except original sender)
+            for (auto &[nbr_id, nbr_ip, nbr_port, cost] : node.Neighbors) {
+                sockaddr_in addr{};
+                addr.sin_family = AF_INET;
+                addr.sin_port = htons(nbr_port);
+                inet_pton(AF_INET, nbr_ip.c_str(), &addr.sin_addr);
+                sendto(node.udp_soc, msg.c_str(), msg.size(), 0, (sockaddr *)&addr, sizeof(addr));
+            }
+
+            cout << "Node " << node.id << " accepted new LSP from Node "
+                    << recv_lsa.sender_id << " (seq=" << recv_lsa.seq_number << ")" << endl;
+        }
+    }
+    cout<<"[Phase 2] Running Djisktra's Algorithm"<<endl;
+    const int INF = 1e9;
+    for(auto &node:nodes){
+        vector<vector<int>> cost(NODE_COUNT, vector<int>(NODE_COUNT, INF));
+        for (int i = 0; i < NODE_COUNT; i++)
+            cost[i][i] = 0;
+
+        for (auto &lsa : node.LSA_database) {
+            for (auto &[nbr, ip, port, c] : lsa.Neighbors) {
+                cost[lsa.sender_id][nbr] = c;
+                cost[nbr][lsa.sender_id] = c;
+            }
+        }
+
+        vector<int> dist(NODE_COUNT, INF);
+        vector<int> visited(NODE_COUNT, 0);
+        dist[node.id] = 0;
+
+        for (int cnt = 0; cnt < NODE_COUNT; cnt++) {
+            int u = -1;
+            for (int i = 0; i < NODE_COUNT; i++)
+                if (!visited[i] && (u == -1 || dist[i] < dist[u]))
+                    u = i;
+            if (u == -1 || dist[u] == INF)
+                break;
+            visited[u] = 1;
+
+            for (int v = 0; v < NODE_COUNT; v++) {
+                if (cost[u][v] < INF && dist[v] > dist[u] + cost[u][v])
+                    dist[v] = dist[u] + cost[u][v];
+            }
+        }
+
+        cout << "\nRouting Table for Node " << node.id << ":\n";
+        for (int j = 0; j < NODE_COUNT; j++) {
+            if (node.id == j) continue;
+            if (dist[j] == INF)
+                cout << "  No path to Node " << j << "\n";
+            else
+                cout << "  Cost to Node " << j << " = " << dist[j] << endl;
+        }
+    }
+}
+
 
 int NODE_COUNT;
 string IP;
@@ -96,7 +253,10 @@ int main(){
             perror("socket creation failed");
             continue;
         }
-
+        // int opt = 1;
+        // if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        //     perror("setsockopt failed");
+        // }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(nodes[i].port);
@@ -176,7 +336,7 @@ int main(){
         }
         cout<<endl;
     }
-    LSA();
+    LSA(nodes,NODE_COUNT);
     // Here I will listen again from TCP after timeout for changes
     while(true){
         for (int i = 0; i < NODE_COUNT; i++) {
@@ -199,7 +359,7 @@ int main(){
             nodes[i].Neighbors = neighbors;
         } 
         cout<<"Updated";
-        LSA();
+        LSA(nodes,NODE_COUNT);
     }
 
 
