@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <vector>
+#include <set>
 #include <tuple>
 #include <bitset>
 #include <string>
@@ -100,6 +101,7 @@ LSA_pkt decode_LSA(string msg){
 void LSA(vector<Node>& nodes,int NODE_COUNT) {
     cout<<"[Phase1] Starting Flooding LSA"<<endl;
     //send the encoded LSA packet to all neighbours of each node via UDP
+
     for(auto &node: nodes){
         node.seq_number++;
         LSA_pkt lsa;
@@ -123,7 +125,7 @@ void LSA(vector<Node>& nodes,int NODE_COUNT) {
     //Listens to all UDP pakets
     fd_set readfds;
     timeval timeout{};
-    timeout.tv_sec = 1; //timeout to wait for select
+    timeout.tv_sec = 0.5; //timeout to wait for select
     FD_ZERO(&readfds);
 
     int max_fd = -1; //maximum UDP fd
@@ -133,47 +135,48 @@ void LSA(vector<Node>& nodes,int NODE_COUNT) {
             max_fd = n.udp_soc;
     }
 
-    select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+    while(true){
+        fd_set tmpfds=readfds;
+        int ret=select(max_fd + 1, &tmpfds, NULL, NULL, &timeout);
+        if(ret <= 0) break;
+        for (auto &node : nodes) {
+            if (!FD_ISSET(node.udp_soc, &tmpfds))
+                continue;
 
-    for (auto &node : nodes) {
-        if (!FD_ISSET(node.udp_soc, &readfds))
-            continue;
+            char buffer[1024];
+            sockaddr_in sender_addr{};
+            socklen_t len = sizeof(sender_addr);
+            int n = recvfrom(node.udp_soc, buffer, sizeof(buffer) - 1, 0,(sockaddr *)&sender_addr, &len);
+            if (n <= 0)
+                continue;
 
-        char buffer[1024];
-        sockaddr_in sender_addr{};
-        socklen_t len = sizeof(sender_addr);
-        int n = recvfrom(node.udp_soc, buffer, sizeof(buffer) - 1, 0,(sockaddr *)&sender_addr, &len);
-        if (n <= 0)
-            continue;
+            buffer[n] = '\0';
+            string msg(buffer);
+            LSA_pkt recv_lsa = decode_LSA(msg);
 
-        buffer[n] = '\0';
-        string msg(buffer);
-        LSA_pkt recv_lsa = decode_LSA(msg);
-
-        // Reliable flooding logic
-        bool newer = true;
-        for (auto &l : node.LSA_database) {
-            if (l.sender_id == recv_lsa.sender_id) {
-                if (recv_lsa.seq_number <= l.seq_number)
-                    newer = false;
-                break;
+            // Reliable flooding logic
+            bool newer = true;
+            for (auto &l : node.LSA_database) {
+                if (l.sender_id == recv_lsa.sender_id) {
+                    if (recv_lsa.seq_number <= l.seq_number)
+                        newer = false;
+                    break;
+                }
             }
-        }
+            if (newer) {
+                node.LSA_database.push_back(recv_lsa);
+    
+                // forward to neighbors (except original sender)
+                for (auto &[nbr_id, nbr_ip, nbr_port, cost] : node.Neighbors) {
+                    sockaddr_in addr{};
+                    addr.sin_family = AF_INET;
+                    addr.sin_port = htons(nbr_port);
+                    inet_pton(AF_INET, nbr_ip.c_str(), &addr.sin_addr);
+                    sendto(node.udp_soc, msg.c_str(), msg.size(), 0, (sockaddr *)&addr, sizeof(addr));
+                }
 
-        if (newer) {
-            node.LSA_database.push_back(recv_lsa);
-
-            // forward to neighbors (except original sender)
-            for (auto &[nbr_id, nbr_ip, nbr_port, cost] : node.Neighbors) {
-                sockaddr_in addr{};
-                addr.sin_family = AF_INET;
-                addr.sin_port = htons(nbr_port);
-                inet_pton(AF_INET, nbr_ip.c_str(), &addr.sin_addr);
-                sendto(node.udp_soc, msg.c_str(), msg.size(), 0, (sockaddr *)&addr, sizeof(addr));
+                cout << "Node " << node.id << " accepted new LSP from Node "<< recv_lsa.sender_id << " (seq=" << recv_lsa.seq_number << ")" << endl;
             }
-
-            cout << "Node " << node.id << " accepted new LSP from Node "
-                    << recv_lsa.sender_id << " (seq=" << recv_lsa.seq_number << ")" << endl;
         }
     }
     cout<<"[Phase 2] Running Djisktra's Algorithm"<<endl;
@@ -227,7 +230,7 @@ vector<Node> nodes;
 int SERVER_PORT=5000;
 string SERVER_IP;
 int BUF_SIZE=1024;
-int TIMEOUT = 1;
+int TIMEOUT = 2;
 
 int main(){
     cout<<"Enter the number of virtual nodes you want to create: ";
@@ -336,6 +339,7 @@ int main(){
         }
         cout<<endl;
     }
+
     LSA(nodes,NODE_COUNT);
     // Here I will listen again from TCP after timeout for changes
     while(true){
