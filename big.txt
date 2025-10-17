@@ -1,0 +1,17 @@
+# Lines beginning with hash are comments, to be ignored
+# Only upper-right triangle is specified (costs are symmetric)
+# Cost of -1 means no link between nodes
+# There are 7 virtual nodes: A, B, C, D, E, F, G
+
+# Costs from A to B, C, D, E, F, G
+2 5 -1 9 -1 3
+# Costs from B to C, D, E, F, G
+  1 2 4 -1 -1
+# Costs from C to D, E, F, G
+    3 -1 2 -1
+# Costs from D to E, F, G
+       2 7 5
+# Costs from E to F, G
+          1 4
+# Costs from F to G
+             6
