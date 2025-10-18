@@ -41,7 +41,7 @@ vector<Node> nodes;
 int SERVER_PORT=5000;
 string SERVER_IP;
 int BUF_SIZE=1024;
-int TIMEOUT = 2;
+int TIMEOUT = 1;
 string str_ip(string bin){
     string ip;
     for (int i = 0; i < 32; i += 8) {

@@ -5,7 +5,7 @@ import sys
 import os
 
 transition_matrix = np.full((26, 26), -1, dtype=int)
-TIMEOUT=1
+TIMEOUT=2
 N=0
 ports=[]
 IP=[]
@@ -107,6 +107,7 @@ def run_oracle(config_path):
             while True:
                 time.sleep(TIMEOUT)
                 if detect_change(config_path):
+                    print("Updating Link state")
                     send_all()
 
         except KeyboardInterrupt:
