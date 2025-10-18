@@ -104,7 +104,6 @@ def run_oracle(config_path):
             print("[Oracle] All nodes connected. Sending initial LINK-STATE info...")
             send_all()
 
-            # print("[Oracle] Monitoring config file for topology changes...")
             while True:
                 time.sleep(TIMEOUT)
                 if detect_change(config_path):
@@ -116,7 +115,7 @@ def run_oracle(config_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 oracle.py <config_file>")
+        print("Usage: python3 oracle.py <config_file_path>")
         sys.exit(1)
     config_file = sys.argv[1]
     run_oracle(config_file)
