@@ -5,7 +5,7 @@ import sys
 import os
 
 transition_matrix = np.full((26, 26), -1, dtype=int)
-TIMEOUT=2
+TIMEOUT=1
 N=0
 ports=[]
 IP=[]

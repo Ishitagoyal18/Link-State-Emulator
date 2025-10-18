@@ -16,6 +16,7 @@
 #include <sys/select.h>
 #include <netinet/in.h>
 #include <chrono>
+#include <errno.h>
 
 using namespace std;
 
@@ -130,10 +131,10 @@ bool node_has_complete_db(const Node &node, int total_nodes) {
 
 void print_routing_table(const Node &node, int total_nodes) {
     const int INF = numeric_limits<int>::max() / 4;
-    cout << "---- Routing table for node " << node.id << " ----\n";
+    cout << "---- Routing table for node " << node.id << " ----" << endl;
     if (node.routing_table.size() != (size_t)total_nodes) {
-        cout << "Routing table not fully computed yet. Known LSAs: " << node.LSA_database.size() << "\n";
-        // show what we have
+        cout << "Routing table not fully computed yet. Known LSAs: " << node.LSA_database.size() << endl;
+        // show placeholders
         for (int d = 0; d < total_nodes; ++d) {
             cout << d << "\t-\t?\n";
         }
@@ -206,6 +207,29 @@ void dijkstra(int src, Node &node, int total_nodes) {
         else next_hop = p;
         node.routing_table[dest] = {next_hop, dist[dest]};
     }
+}
+
+
+string recv_all_nonblocking(int sock) {
+    string out;
+    char buf[4096];
+    while (true) {
+        ssize_t n = recv(sock, buf, sizeof(buf), MSG_DONTWAIT);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break; // no more data now
+            perror("recv (nonblocking)");
+            break;
+        } else if (n == 0) {
+            // connection closed by peer
+            break;
+        } else {
+            out.append(buf, (size_t)n);
+            // if we read less than buffer, chances are there's no more data immediately available
+            if (n < (ssize_t)sizeof(buf)) break;
+            // else loop and try to read more
+        }
+    }
+    return out;
 }
 
 void run_link_state(Node &local_node, int total_nodes) {
@@ -315,15 +339,15 @@ void run_link_state(Node &local_node, int total_nodes) {
         }
     } // end flooding loop
 
-    cout << "Node " << local_node.id << " has complete LSA DB (" << local_node.LSA_database.size() << " LSAs)\n";
+    cout << "Node " << local_node.id << " has complete LSA DB (" << local_node.LSA_database.size() << " LSAs)" << endl;
     dijkstra(local_node.id, local_node, total_nodes);
-    cout << "Computed routing table after flooding.\n";
+    cout << "Computed routing table after flooding." << endl;
     print_routing_table(local_node, total_nodes);
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 5) {
-        cerr << "Usage: " << argv[0] << " <node_id> <total_nodes> <oracle_ip> <local_ip>\n";
+        cerr << "Usage: " << argv[0] << " <node_id> <total_nodes> <oracle_ip> <local_ip>" << endl;
         return 1;
     }
     int node_id = stoi(argv[1]);
@@ -357,7 +381,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     local.udp_soc = usock;
-    cout << "UDP socket bound to " << local.ip << ":" << local.port << "\n";
+    cout << "UDP socket bound to " << local.ip << ":" << local.port << endl;
 
     // connect to oracle via TCP and register
     int tsock = socket(AF_INET, SOCK_STREAM, 0);
@@ -378,30 +402,48 @@ int main(int argc, char* argv[]) {
     if (send(tsock, encoded_msg.c_str(), encoded_msg.size(), 0) < 0) {
         perror("Send registration failed (but continuing)");
     } else {
-        cout << "Sent registration to Oracle\n";
+        cout << "Sent registration to Oracle" << endl;
     }
 
-    // receive initial neighbors (blocking)
+    // receive initial neighbors (blocking -> but may be partial; read all currently available)
     {
-        vector<char> buffer(BUF_SIZE);
-        ssize_t n = recv(tsock, buffer.data(), BUF_SIZE - 1, 0);
-        if (n <= 0) { perror("recv initial neighbors failed"); close(usock); close(tsock); return 1; }
-        string msg(buffer.data(), n);
-        cout << "Received neighbors from Oracle\n";
-        local.Neighbors = decode_msg(msg);
+        // wait until socket readable
+        fd_set rset;
+        FD_ZERO(&rset);
+        FD_SET(local.tcp_soc, &rset);
+        timeval tv;
+        tv.tv_sec = 1000;
+        tv.tv_usec = 0;
+        int rv = select(local.tcp_soc + 1, &rset, nullptr, nullptr, &tv);
+        if (rv <= 0) {
+            cerr << "Timeout waiting for initial neighbors from Oracle" << endl;
+            close(usock); close(tsock); return 1;
+        }
+        string msg = recv_all_nonblocking(local.tcp_soc);
+        if (msg.empty()) {
+            cerr << "Initial neighbor message empty or incomplete" << endl;
+            close(usock); close(tsock); return 1;
+        }
+        cout << "Received neighbors from Oracle" << endl;
+        auto parsed = decode_msg(msg);
+        if (parsed.empty()) {
+            cerr << "Warning: decoded neighbor list empty (initial). raw length=" << msg.size() << endl;
+            close(usock); close(tsock); return 1;
+        }
+        local.Neighbors = parsed;
     }
 
-    cout << "Node " << local.id << " neighbors:\n";
+    cout << "Node " << local.id << " neighbors:" << endl;
     for (auto &[idx,ip,port,cost] : local.Neighbors) {
-        cout << "  (Index: " << idx << ", IP: " << ip << ", Port: " << port << ", Cost: " << cost << ")\n";
+        cout << "  (Index: " << idx << ", IP: " << ip << ", Port: " << port << ", Cost: " << cost << ")" << endl;
     }
 
     // initial flooding
-    cout << "Starting initial link-state flooding...\n";
+    cout << "Starting initial link-state flooding..." << endl;
     run_link_state(local, total_nodes);
 
     // main loop: monitor oracle TCP for updates and periodically print routing table
-    cout << "Will print routing table every " << PERIOD << "s and print on Oracle updates.\n";
+    cout << "Will print routing table every " << PERIOD << "s and print on Oracle updates." << endl;
     auto last_print = chrono::steady_clock::now();
     while (true) {
         fd_set rset;
@@ -413,45 +455,32 @@ int main(int argc, char* argv[]) {
         tv.tv_usec = 0;
         int rv = select(maxfd + 1, &rset, nullptr, nullptr, &tv);
         if (rv > 0 && FD_ISSET(local.tcp_soc, &rset)) {
-            vector<char> buffer(BUF_SIZE);
-            ssize_t n = recv(local.tcp_soc, buffer.data(), BUF_SIZE - 1, 0);
-            if (n <= 0) {
-                if (n == 0) cerr << "Oracle closed connection\n";
-                else perror("recv from oracle failed");
-                break;
-            }
-            string msg(buffer.data(), n);
-            cout << "Received updated neighbors from Oracle\n";
-            auto new_neighbors = decode_msg(msg);
-            bool changed = false;
-            if (new_neighbors.size() != local.Neighbors.size()) changed = true;
-            else {
-                for (size_t i = 0; i < new_neighbors.size() && !changed; ++i) {
-                    if (get<0>(new_neighbors[i]) != get<0>(local.Neighbors[i]) ||
-                        get<1>(new_neighbors[i]) != get<1>(local.Neighbors[i]) ||
-                        get<2>(new_neighbors[i]) != get<2>(local.Neighbors[i]) ||
-                        get<3>(new_neighbors[i]) != get<3>(local.Neighbors[i])) {
-                        changed = true;
-                    }
+            // read all currently-available bytes
+            string msg = recv_all_nonblocking(local.tcp_soc);
+            if (msg.empty()) {
+                char testbuf[1];
+                ssize_t tn = recv(local.tcp_soc, testbuf, 1, MSG_DONTWAIT);
+                if (tn == 0) {
+                    cerr << "Oracle closed connection" << endl;
+                    break;
                 }
+                // otherwise nothing useful; continue
+                continue;
             }
-            if (changed) {
-                cout << "[Oracle update detected] Graph changed for this node -> re-flooding LSAs\n";
-                local.Neighbors = new_neighbors;
-                // re-run flooding (this will print routing table at the end and periodically during)
-                run_link_state(local, total_nodes);
-                cout << "[After Oracle update] new routing table:\n";
-                print_routing_table(local, total_nodes);
-                last_print = chrono::steady_clock::now();
-            } else {
-                cout << "Graph unchanged for this node\n";
-            }
+
+            cout << "Received updated neighbors from Oracle" << endl;
+            auto new_neighbors = decode_msg(msg);
+            local.Neighbors = new_neighbors;
+            run_link_state(local, total_nodes);
+            cout << "[After Oracle update] new routing table:" << endl;
+            print_routing_table(local, total_nodes);
+            last_print = chrono::steady_clock::now();
         }
 
         // periodic print (outside of flooding)
         auto now = chrono::steady_clock::now();
         if (chrono::duration_cast<chrono::seconds>(now - last_print).count() >= PERIOD) {
-            cout << "[Periodic] printing routing table:\n";
+            cout << "[Periodic] printing routing table:" << endl;
             print_routing_table(local, total_nodes);
             last_print = now;
         }
